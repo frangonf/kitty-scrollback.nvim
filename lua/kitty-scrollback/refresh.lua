@@ -65,6 +65,7 @@ M.refresh = function(p, opts)
         return
       end
       local columns = vim.o.columns
+      local oldwin, oldpos = p.winid, p.pos
       local views = {}
       for _, win in ipairs(windows) do
         views[win] = vim.api.nvim_win_call(win, vim.fn.winsaveview)
@@ -76,11 +77,19 @@ M.refresh = function(p, opts)
       local function discard()
         vim.o.columns = columns
         for win, saved in pairs(views) do
-          if vim.api.nvim_win_is_valid(win) and vim.api.nvim_win_get_buf(win) == oldbuf then
-            vim.api.nvim_win_call(win, function()
-              vim.fn.winrestview(saved)
-            end)
+          if vim.api.nvim_win_is_valid(win) and vim.api.nvim_buf_is_valid(oldbuf) then
+            if vim.api.nvim_win_get_buf(win) == buf then
+              vim.api.nvim_win_set_buf(win, oldbuf)
+            end
+            if vim.api.nvim_win_get_buf(win) == oldbuf then
+              vim.api.nvim_win_call(win, function()
+                vim.fn.winrestview(saved)
+              end)
+            end
           end
+        end
+        if p.bufid == buf then
+          p.bufid, p.winid, p.pos = oldbuf, oldwin, oldpos
         end
         if render_win and vim.api.nvim_win_is_valid(render_win) then
           vim.api.nvim_win_close(render_win, true)
@@ -126,7 +135,8 @@ M.refresh = function(p, opts)
         vim.api.nvim_win_close(render_win, true)
         local lost_position = false
         for _, win in ipairs(windows) do
-          local saved = views[win] or vim.api.nvim_win_call(win, vim.fn.winsaveview)
+          views[win] = views[win] or vim.api.nvim_win_call(win, vim.fn.winsaveview)
+          local saved = vim.deepcopy(views[win])
           local changed
           saved.lnum, changed = translate_line(saved.lnum, hunks, vim.api.nvim_buf_line_count(buf))
           saved.topline = translate_line(saved.topline, hunks, vim.api.nvim_buf_line_count(buf))
@@ -146,8 +156,19 @@ M.refresh = function(p, opts)
             win_first_line = vim.fn.line('w0'),
             win_last_line = vim.fn.line('w$'),
             col = vim.fn.wincol() - 1,
+            view = vim.fn.winsaveview(),
           }
         end)
+        local initialized, init_error = pcall(vim.api.nvim_buf_call, buf, function()
+          -- Ex propagates FileType hook errors so the old snapshot can be restored.
+          vim.cmd('setlocal filetype=kitty-scrollback')
+          require('kitty-scrollback.keymaps').set_scrollback_keymaps(buf, oldbuf)
+        end)
+        if not initialized then
+          discard()
+          failed(tostring(init_error))
+          return
+        end
         require('kitty-scrollback.autocommands').set_term_enter_autocmd(buf)
         vim.api.nvim_buf_delete(oldbuf, { force = true })
         p.refreshing = false
@@ -186,8 +207,6 @@ M.refresh = function(p, opts)
         -- Clearing marks the terminal dirty even when the snapshot contains only blank lines.
         vim.api.nvim_chan_send(channel, '\27[2J\27[H' .. text)
         vim.api.nvim_buf_set_name(buf, 'term://kitty-scrollback.nvim/' .. buf)
-        vim.bo[buf].filetype = 'kitty-scrollback'
-        require('kitty-scrollback.keymaps').set_scrollback_keymaps(buf)
       end)
       if not rendered then
         discard()

@@ -92,6 +92,98 @@ describe('scrollback refresh', function()
     vim.cmd('silent! %bwipeout!')
   end)
 
+  it('fires FileType only after the snapshot and reading view are ready', function()
+    local observed
+    local columns = vim.o.columns
+    local before = view()
+    vim.api.nvim_create_autocmd('FileType', {
+      pattern = 'kitty-scrollback',
+      once = true,
+      callback = function(e)
+        observed = {
+          bufid = e.buf,
+          private_bufid = p.bufid,
+          winid = vim.api.nvim_get_current_win(),
+          columns = vim.o.columns,
+          text = table.concat(vim.api.nvim_buf_get_lines(e.buf, 0, -1, false), '\n'),
+          view = view(),
+        }
+        vim.keymap.set('n', '<leader>R', '<Plug>(KsbRefresh)', { buffer = e.buf })
+      end,
+    })
+    append('output visible to the ready hook')
+    local oldbuf = p.bufid
+
+    api.refresh()
+
+    assert.is_true(vim.wait(5000, function()
+      return p.bufid ~= oldbuf and not p.refreshing
+    end))
+    assert.is_not_nil(observed)
+    assert.equals(p.bufid, observed.private_bufid)
+    assert.equals(p.bufid, observed.bufid)
+    assert.equals(p.winid, observed.winid)
+    assert.equals(columns, observed.columns)
+    assert.same(before, observed.view)
+    assert.is_not_nil(observed.text:find('output visible to the ready hook', 1, true))
+    assert.equals('', vim.fn.maparg('<leader>r', 'n'))
+    assert.equals('<Plug>(KsbRefresh)', vim.fn.maparg('<leader>R', 'n'))
+  end)
+
+  it('rolls back a failed ready hook without losing the old view or paste draft', function()
+    require('kitty-scrollback.util').setup(p, opts)
+    local windows = require('kitty-scrollback.windows')
+    windows.setup(p, opts)
+    require('kitty-scrollback.footer_win').setup(p, opts)
+    require('kitty-scrollback.autocommands').setup(p, opts)
+    require('kitty-scrollback.autocommands').load_autocmds()
+    opts.paste_window.hide_footer = true
+    p.pos = {
+      cursor_line = 40,
+      buf_last_line = #lines(),
+      win_first_line = 30,
+      win_last_line = 51,
+      col = 8,
+    }
+    windows.open_paste_window()
+    vim.api.nvim_buf_set_lines(p.paste_bufid, 0, -1, false, { 'keep this draft' })
+    local oldbuf, oldwin, oldpos = p.bufid, p.winid, p.pos
+    local before_lines, before_view = lines(), view()
+    local columns, count = vim.o.columns, #vim.api.nvim_list_bufs()
+    vim.api.nvim_create_autocmd('FileType', {
+      pattern = 'kitty-scrollback',
+      once = true,
+      callback = function()
+        error('ready hook failed')
+      end,
+    })
+    local added = {}
+    for i = 101, 500 do
+      table.insert(added, ('line %03d sample output'):format(i))
+    end
+    append(table.concat(added, '\n'))
+
+    api.refresh()
+
+    assert.is_true(vim.wait(5000, function()
+      return p.refreshing == false
+    end))
+    assert.equals(oldbuf, p.bufid)
+    assert.equals(oldwin, p.winid)
+    assert.equals(oldpos, p.pos)
+    assert.same(before_lines, lines())
+    assert.same(before_view, view())
+    assert.equals(columns, vim.o.columns)
+    assert.equals(count, #vim.api.nvim_list_bufs())
+    assert.equals(p.paste_winid, vim.api.nvim_get_current_win())
+    assert.same({ 'keep this draft' }, vim.api.nvim_buf_get_lines(p.paste_bufid, 0, -1, false))
+    assert.equals(vim.log.levels.ERROR, notifications[1].level)
+    api.refresh()
+    assert.is_true(vim.wait(5000, function()
+      return p.bufid ~= oldbuf and not p.refreshing
+    end))
+  end)
+
   it('keeps the old snapshot and editor size if preparing the replacement fails', function()
     opts.scrollback_tempfile = true
     tempfile_stub = stub(require('kitty-scrollback.util'), 'create_tempfile', function()
@@ -146,6 +238,43 @@ describe('scrollback refresh', function()
     assert.equals(1, vim.fn.filereadable(filename))
     assert.is_not_nil(table.concat(vim.fn.readfile(filename), '\n'):find(wide, 1, true))
     assert.is_not_nil(table.concat(lines(), '\n'):find('next Unicode log λ界', 1, true))
+  end)
+
+  it('keeps the full reading view when opening paste after a wide-line refresh', function()
+    local wide = 'wide ' .. string.rep('x', 220) .. ' λ界'
+    append(wide)
+    local oldbuf = p.bufid
+    api.refresh()
+    assert.is_true(vim.wait(5000, function()
+      return p.bufid ~= oldbuf and not p.refreshing
+    end))
+    local row
+    for i, text in ipairs(lines()) do
+      if text == wide then
+        row = i
+      end
+    end
+    assert.is_not_nil(row)
+    vim.fn.winrestview({ lnum = row, col = 120, leftcol = 70, topline = row - 10 })
+    local before = view()
+    oldbuf = p.bufid
+    api.refresh()
+    assert.is_true(vim.wait(5000, function()
+      return p.bufid ~= oldbuf and not p.refreshing
+    end))
+    assert.same(before, view())
+    require('kitty-scrollback.util').setup(p, opts)
+    local windows = require('kitty-scrollback.windows')
+    windows.setup(p, opts)
+    require('kitty-scrollback.footer_win').setup(p, opts)
+    require('kitty-scrollback.autocommands').setup(p, opts)
+    require('kitty-scrollback.autocommands').load_autocmds()
+    opts.paste_window.hide_footer = true
+
+    windows.open_paste_window()
+
+    assert.same(before, view())
+    assert.equals(p.paste_winid, vim.api.nvim_get_current_win())
   end)
 
   it('retains the buffer scrollback limit when global options were restored', function()
@@ -223,6 +352,33 @@ describe('scrollback refresh', function()
       assert.equals(0, vim.fn.maparg('<leader>r', 'n', false, true).buffer)
       assert.equals('<Cmd>echo "existing action"<CR>', vim.fn.maparg('<leader>r', 'n'))
       assert.equals('<Plug>(KsbRefresh)', vim.fn.maparg('<leader>R', 'n'))
+    end
+  end)
+
+  it('preserves buffer-local refresh remaps and their options across refreshes', function()
+    vim.keymap.del('n', '<leader>r', { buffer = p.bufid })
+    vim.keymap.set('n', '<leader>r', '<cmd>echo "existing action"<cr>')
+    vim.keymap.set('n', '<leader>R', '<Plug>(KsbRefresh)', {
+      buffer = p.bufid,
+      desc = 'My local refresh',
+      silent = true,
+      nowait = true,
+    })
+    require('kitty-scrollback.keymaps').set_scrollback_keymaps(p.bufid)
+
+    for _ = 1, 2 do
+      local oldbuf = p.bufid
+      vim.cmd.normal(' R')
+      assert.is_true(vim.wait(5000, function()
+        return p.bufid ~= oldbuf and not p.refreshing
+      end))
+      local mapping = vim.fn.maparg('<leader>R', 'n', false, true)
+      assert.equals('<Plug>(KsbRefresh)', mapping.rhs)
+      assert.equals(1, mapping.buffer)
+      assert.equals('My local refresh', mapping.desc)
+      assert.equals(1, mapping.silent)
+      assert.equals(1, mapping.nowait)
+      assert.equals(0, vim.fn.maparg('<leader>r', 'n', false, true).buffer)
     end
   end)
 

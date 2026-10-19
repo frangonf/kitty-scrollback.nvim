@@ -64,13 +64,30 @@ M.setup = function(private, options)
   end
 end
 
-M.set_scrollback_keymaps = function(bufid)
+M.set_scrollback_keymaps = function(bufid, oldbuf)
   if opts.keymaps_enabled then
     vim.keymap.set('n', plug.REFRESH, ksb_api.refresh, {
       buffer = bufid,
       desc = 'Refresh Kitty scrollback',
     })
     vim.api.nvim_buf_call(bufid, function()
+      if oldbuf then
+        local default_lhs = vim.api.nvim_replace_termcodes('<leader>r', true, true, true)
+        local default_mapping
+        for _, mapping in ipairs(vim.api.nvim_buf_get_keymap(oldbuf, 'n')) do
+          if mapping.rhs and mapping.rhs:find(plug.REFRESH, 1, true) then
+            if mapping.lhsraw == default_lhs then
+              default_mapping = mapping
+            else
+              vim.fn.mapset('n', false, mapping)
+            end
+          end
+        end
+        -- Restore the default only if custom bindings have not already replaced it.
+        if default_mapping and vim.fn.hasmapto(plug.REFRESH, 'n') == 0 then
+          vim.fn.mapset('n', false, default_mapping)
+        end
+      end
       set_default({ 'n' }, '<leader>r', plug.REFRESH, {
         buffer = bufid,
         desc = 'Refresh Kitty scrollback',
