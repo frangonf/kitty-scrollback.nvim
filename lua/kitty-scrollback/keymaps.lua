@@ -64,6 +64,21 @@ M.setup = function(private, options)
   end
 end
 
+M.set_scrollback_keymaps = function(bufid)
+  if opts.keymaps_enabled then
+    vim.keymap.set('n', plug.REFRESH, ksb_api.refresh, {
+      buffer = bufid,
+      desc = 'Refresh Kitty scrollback',
+    })
+    vim.api.nvim_buf_call(bufid, function()
+      set_default({ 'n' }, '<leader>r', plug.REFRESH, {
+        buffer = bufid,
+        desc = 'Refresh Kitty scrollback',
+      })
+    end)
+  end
+end
+
 M.set_buffer_local_keymaps = function(bufid)
   if not opts.keymaps_enabled then
     return

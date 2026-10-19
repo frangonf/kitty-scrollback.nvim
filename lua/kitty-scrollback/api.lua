@@ -16,6 +16,11 @@ M.setup = function(private, options)
   opts = options ---@diagnostic disable-line: unused-local
 end
 
+---Reload the source terminal's scrollback without leaving the current view.
+M.refresh = function()
+  require('kitty-scrollback.refresh').refresh(p, opts)
+end
+
 ---Attempt to force quit Neovim. How do you exit vim? Why would you exit vim?
 M.quit_all = function()
   ksb_util.quitall()
