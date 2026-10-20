@@ -92,6 +92,46 @@ describe('scrollback refresh', function()
     vim.cmd('silent! %bwipeout!')
   end)
 
+  it('preserves the text origin and window display options across refreshes', function()
+    vim.api.nvim_set_option_value('signcolumn', 'no', { win = p.winid, scope = 'local' })
+    vim.api.nvim_set_option_value('statuscolumn', ' ', { win = p.winid, scope = 'local' })
+    vim.api.nvim_set_option_value('winhighlight', 'Normal:Search,Visual:IncSearch', {
+      win = p.winid,
+      scope = 'local',
+    })
+    local before = view()
+    local origin = vim.fn.screenpos(p.winid, before[3], 1).col
+    local gutter = vim.fn.getwininfo(p.winid)[1].textoff
+    local options = {}
+    for _, name in ipairs({
+      'signcolumn',
+      'statuscolumn',
+      'winhighlight',
+      'scrolloff',
+      'sidescrolloff',
+    }) do
+      options[name] = vim.api.nvim_get_option_value(name, { win = p.winid, scope = 'local' })
+    end
+
+    for _ = 1, 3 do
+      local oldbuf = p.bufid
+      api.refresh()
+      assert.is_true(vim.wait(5000, function()
+        return p.bufid ~= oldbuf and not p.refreshing
+      end))
+      for name, value in pairs(options) do
+        assert.equals(
+          value,
+          vim.api.nvim_get_option_value(name, { win = p.winid, scope = 'local' }),
+          name
+        )
+      end
+      assert.same(before, view())
+      assert.equals(origin, vim.fn.screenpos(p.winid, before[3], 1).col)
+      assert.equals(gutter, vim.fn.getwininfo(p.winid)[1].textoff)
+    end
+  end)
+
   it('fires FileType only after the snapshot and reading view are ready', function()
     local observed
     local columns = vim.o.columns

@@ -66,9 +66,29 @@ M.refresh = function(p, opts)
       end
       local columns = vim.o.columns
       local oldwin, oldpos = p.winid, p.pos
-      local views = {}
-      for _, win in ipairs(windows) do
+      local views, window_options = {}, {}
+      local function save_window(win)
         views[win] = vim.api.nvim_win_call(win, vim.fn.winsaveview)
+        window_options[win] = {}
+        for name, info in pairs(vim.api.nvim_get_all_options_info()) do
+          if info.scope == 'win' then
+            window_options[win][name] =
+              vim.api.nvim_get_option_value(name, { win = win, scope = 'local' })
+          end
+        end
+      end
+      local function restore_window(win, saved)
+        for name, value in pairs(window_options[win]) do
+          if vim.api.nvim_get_option_value(name, { win = win, scope = 'local' }) ~= value then
+            vim.api.nvim_set_option_value(name, value, { win = win, scope = 'local' })
+          end
+        end
+        vim.api.nvim_win_call(win, function()
+          vim.fn.winrestview(saved)
+        end)
+      end
+      for _, win in ipairs(windows) do
+        save_window(win)
       end
       local buf = vim.api.nvim_create_buf(false, true)
       vim.bo[buf].scrollback = vim.bo[oldbuf].scrollback
@@ -82,9 +102,7 @@ M.refresh = function(p, opts)
               vim.api.nvim_win_set_buf(win, oldbuf)
             end
             if vim.api.nvim_win_get_buf(win) == oldbuf then
-              vim.api.nvim_win_call(win, function()
-                vim.fn.winrestview(saved)
-              end)
+              restore_window(win, saved)
             end
           end
         end
@@ -135,7 +153,9 @@ M.refresh = function(p, opts)
         vim.api.nvim_win_close(render_win, true)
         local lost_position = false
         for _, win in ipairs(windows) do
-          views[win] = views[win] or vim.api.nvim_win_call(win, vim.fn.winsaveview)
+          if not views[win] then
+            save_window(win)
+          end
           local saved = vim.deepcopy(views[win])
           local changed
           saved.lnum, changed = translate_line(saved.lnum, hunks, vim.api.nvim_buf_line_count(buf))
@@ -143,9 +163,7 @@ M.refresh = function(p, opts)
           lost_position = lost_position or changed
           -- Keep p.bufid unchanged so BufEnter does not close the paste window.
           vim.api.nvim_win_set_buf(win, buf)
-          vim.api.nvim_win_call(win, function()
-            vim.fn.winrestview(saved)
-          end)
+          restore_window(win, saved)
         end
         p.bufid = buf
         p.winid = windows[1]
