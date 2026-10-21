@@ -927,6 +927,11 @@ the snapshot; it does not duplicate previous output. Changed or discarded text
 falls back to the nearest available position with a warning. Failed refreshes
 keep the previous snapshot.
 
+On Neovim 0.12+, refresh uses Kitty synchronized output to hide temporary
+rendering resizes. Older Neovim versions retain the existing redraw behavior.
+Kitty releases a synchronized update after two seconds, so very large
+snapshots may still flicker.
+
 To use <Leader>R instead of the default <Leader>r, configure:
 >lua
     require('kitty-scrollback').setup({

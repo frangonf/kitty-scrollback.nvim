@@ -10,7 +10,19 @@ local kitty_instance
 local original_listen_on = vim.env.KITTY_LISTEN_ON
 local notify_stub
 local tempfile_stub
+local ui_stub
+local open_term_stub
 local notifications
+local original_ui_send = vim.api.nvim_ui_send
+local original_termsync = vim.fn.exists('+termsync') == 1 and vim.o.termsync
+
+local function record_presentation()
+  local messages = {}
+  ui_stub = stub(vim.api, 'nvim_ui_send', function(data)
+    table.insert(messages, { data, vim.o.termsync, vim.o.columns })
+  end)
+  return messages
+end
 
 local function lines()
   return vim.api.nvim_buf_get_lines(p.bufid, 0, -1, false)
@@ -82,6 +94,18 @@ describe('scrollback refresh', function()
   after_each(function()
     vim.env.KITTY_LISTEN_ON = original_listen_on
     notify_stub:revert()
+    if ui_stub then
+      ui_stub:revert()
+      ui_stub = nil
+    end
+    vim.api.nvim_ui_send = original_ui_send
+    if open_term_stub then
+      open_term_stub:revert()
+      open_term_stub = nil
+    end
+    if vim.fn.exists('+termsync') == 1 then
+      vim.o.termsync = original_termsync
+    end
     if tempfile_stub then
       tempfile_stub:revert()
       tempfile_stub = nil
@@ -90,6 +114,264 @@ describe('scrollback refresh', function()
     pcall(vim.keymap.del, 'n', '<leader>R')
     pcall(vim.keymap.del, 'n', '<leader>r')
     vim.cmd('silent! %bwipeout!')
+    for _, autocmd in ipairs(vim.api.nvim_get_autocmds({ event = 'VimLeavePre' })) do
+      assert.is_false(
+        autocmd.desc == 'Restore Kitty refresh presentation',
+        'presentation cleanup leaked'
+      )
+    end
+  end)
+
+  if original_ui_send and vim.fn.exists('+termsync') == 1 then
+    it('publishes refresh atomically and restores termsync before readiness hooks', function()
+      local messages = record_presentation()
+      local columns = vim.o.columns
+      for i, enabled in ipairs({ true, false }) do
+        vim.o.termsync = enabled
+        local observed
+        vim.api.nvim_create_autocmd('FileType', {
+          pattern = 'kitty-scrollback',
+          once = true,
+          callback = function()
+            observed = { #messages, vim.o.termsync, vim.o.columns }
+          end,
+        })
+        local oldbuf = p.bufid
+
+        api.refresh()
+
+        assert.equals(2 * (i - 1), #messages, 'fetching must stay outside synchronized output')
+        assert.is_true(vim.wait(5000, function()
+          return p.bufid ~= oldbuf and not p.refreshing
+        end))
+        assert.equals(2 * i, #messages)
+        assert.same({ '\27[?2026h', false, columns }, messages[2 * i - 1])
+        assert.same({ '\27[?2026l', false, columns }, messages[2 * i])
+        assert.same({ 2 * i, enabled, columns }, observed)
+        assert.equals(enabled, vim.o.termsync)
+      end
+    end)
+
+    it('releases synchronized output if Neovim exits while rendering', function()
+      local messages = record_presentation()
+      vim.o.termsync = true
+      local observed
+      vim.api.nvim_create_autocmd('TermOpen', {
+        once = true,
+        callback = function()
+          vim.api.nvim_exec_autocmds('VimLeavePre', {})
+          observed = { #messages, vim.o.termsync }
+        end,
+      })
+      local oldbuf = p.bufid
+
+      api.refresh()
+
+      assert.is_true(vim.wait(5000, function()
+        return p.bufid ~= oldbuf and not p.refreshing
+      end))
+      assert.same({ 2, true }, observed)
+      assert.equals(2, #messages)
+    end)
+
+    it('cancels and thaws when the staging buffer is deleted before rendering', function()
+      local messages = record_presentation()
+      vim.o.termsync = true
+      local oldbuf, before, columns = p.bufid, view(), vim.o.columns
+      vim.api.nvim_create_autocmd('TermOpen', {
+        once = true,
+        callback = function(e)
+          vim.schedule(function()
+            vim.api.nvim_buf_delete(e.buf, { force = true })
+          end)
+        end,
+      })
+
+      api.refresh()
+
+      local finished = vim.wait(2000, function()
+        return p.refreshing == false
+      end)
+      if not finished then
+        vim.api.nvim_exec_autocmds('VimLeavePre', {})
+      end
+      assert.is_true(finished)
+      assert.equals(oldbuf, p.bufid)
+      assert.same(before, view())
+      assert.equals(columns, vim.o.columns)
+      assert.is_true(vim.o.termsync)
+      assert.equals(2, #messages)
+    end)
+
+    it('thaws and permits retrying after the staging terminal fails to open', function()
+      local messages = record_presentation()
+      vim.o.termsync = true
+      local oldbuf, before, columns = p.bufid, view(), vim.o.columns
+      open_term_stub = stub(vim.api, 'nvim_open_term', function()
+        error('terminal preparation failed')
+      end)
+
+      api.refresh()
+
+      assert.is_true(vim.wait(5000, function()
+        return p.refreshing == false
+      end))
+      assert.equals(oldbuf, p.bufid)
+      assert.same(before, view())
+      assert.equals(columns, vim.o.columns)
+      assert.is_true(vim.o.termsync)
+      assert.equals(2, #messages)
+      assert.is_not_nil(notifications[1].message:find('terminal preparation failed', 1, true))
+      open_term_stub:revert()
+      open_term_stub = nil
+      api.refresh()
+      assert.is_true(vim.wait(5000, function()
+        return p.bufid ~= oldbuf and not p.refreshing
+      end))
+      assert.equals(4, #messages)
+    end)
+
+    it('restores termsync even if the UI send operation fails', function()
+      vim.o.termsync = true
+      ui_stub = stub(vim.api, 'nvim_ui_send', function()
+        error('UI send failed')
+      end)
+      local oldbuf, columns = p.bufid, vim.o.columns
+
+      api.refresh()
+
+      assert.is_true(vim.wait(5000, function()
+        return p.refreshing == false
+      end))
+      assert.equals(oldbuf, p.bufid)
+      assert.equals(columns, vim.o.columns)
+      assert.is_true(vim.o.termsync)
+      assert.is_not_nil(notifications[1].message:find('UI send failed', 1, true))
+    end)
+
+    it('does not start synchronized output when no width expansion is needed', function()
+      local messages = record_presentation()
+      opts.scrollback_columns = vim.o.columns
+      local oldbuf, before = p.bufid, view()
+      local enabled = vim.o.termsync
+
+      api.refresh()
+
+      assert.is_true(vim.wait(5000, function()
+        return p.bufid ~= oldbuf and not p.refreshing
+      end))
+      assert.equals(0, #messages)
+      assert.equals(enabled, vim.o.termsync)
+      assert.same(before, view())
+    end)
+  end
+
+  it('keeps refreshing when the presentation API is unavailable', function()
+    vim.api.nvim_ui_send = nil
+    local oldbuf, before = p.bufid, view()
+
+    api.refresh()
+
+    assert.is_true(vim.wait(5000, function()
+      return p.bufid ~= oldbuf and not p.refreshing
+    end))
+    assert.same(before, view())
+    assert.equals(0, #notifications)
+  end)
+
+  it('rolls back and permits retrying after a buffer-switch hook fails', function()
+    local messages = original_ui_send and record_presentation()
+    local termsync = original_ui_send and vim.o.termsync
+    local oldbuf, before = p.bufid, view()
+    local columns, count = vim.o.columns, #vim.api.nvim_list_bufs()
+    vim.api.nvim_create_autocmd('BufLeave', {
+      buffer = oldbuf,
+      once = true,
+      callback = function()
+        error('buffer-switch hook failed')
+      end,
+    })
+
+    api.refresh()
+
+    local finished = vim.wait(2000, function()
+      return p.refreshing == false
+    end)
+    if not finished then
+      vim.api.nvim_exec_autocmds('VimLeavePre', {})
+    end
+    assert.is_true(finished)
+    assert.equals(oldbuf, p.bufid)
+    assert.same(before, view())
+    assert.equals(columns, vim.o.columns)
+    assert.equals(count, #vim.api.nvim_list_bufs())
+    assert.is_not_nil(notifications[1].message:find('buffer-switch hook failed', 1, true))
+    if messages then
+      assert.equals(2, #messages)
+      assert.equals(termsync, vim.o.termsync)
+    end
+    api.refresh()
+    assert.is_true(vim.wait(5000, function()
+      return p.bufid ~= oldbuf and not p.refreshing
+    end))
+  end)
+
+  it('rolls back without rerunning failing buffer hooks or closing the draft', function()
+    require('kitty-scrollback.util').setup(p, opts)
+    local windows = require('kitty-scrollback.windows')
+    windows.setup(p, opts)
+    require('kitty-scrollback.footer_win').setup(p, opts)
+    require('kitty-scrollback.autocommands').setup(p, opts)
+    require('kitty-scrollback.autocommands').load_autocmds()
+    opts.paste_window.hide_footer = true
+    p.pos = {
+      cursor_line = 40,
+      buf_last_line = #lines(),
+      win_first_line = 30,
+      win_last_line = 51,
+      col = 8,
+    }
+    windows.open_paste_window()
+    vim.api.nvim_buf_set_lines(p.paste_bufid, 0, -1, false, { 'keep this draft' })
+    local messages = original_ui_send and record_presentation()
+    local termsync = original_ui_send and vim.o.termsync
+    local oldbuf, before = p.bufid, view()
+    local columns, count = vim.o.columns, #vim.api.nvim_list_bufs()
+    local hook_calls = 0
+    local hook = vim.api.nvim_create_autocmd('BufEnter', {
+      callback = function()
+        hook_calls = hook_calls + 1
+        error('buffer-entry hook failed')
+      end,
+    })
+
+    api.refresh()
+
+    local finished = vim.wait(2000, function()
+      return p.refreshing == false
+    end)
+    vim.api.nvim_del_autocmd(hook)
+    if not finished then
+      vim.api.nvim_exec_autocmds('VimLeavePre', {})
+    end
+    assert.is_true(finished)
+    assert.equals(1, hook_calls)
+    assert.equals(oldbuf, p.bufid)
+    assert.equals(oldbuf, vim.api.nvim_win_get_buf(p.winid))
+    assert.same(before, view())
+    assert.equals(columns, vim.o.columns)
+    assert.equals(count, #vim.api.nvim_list_bufs())
+    assert.equals(p.paste_winid, vim.api.nvim_get_current_win())
+    assert.same({ 'keep this draft' }, vim.api.nvim_buf_get_lines(p.paste_bufid, 0, -1, false))
+    assert.is_not_nil(notifications[1].message:find('buffer-entry hook failed', 1, true))
+    if messages then
+      assert.equals(2, #messages)
+      assert.equals(termsync, vim.o.termsync)
+    end
+    api.refresh()
+    assert.is_true(vim.wait(5000, function()
+      return p.bufid ~= oldbuf and not p.refreshing
+    end))
   end)
 
   it('preserves the text origin and window display options across refreshes', function()
@@ -99,6 +381,7 @@ describe('scrollback refresh', function()
       win = p.winid,
       scope = 'local',
     })
+    vim.cmd.redraw()
     local before = view()
     local origin = vim.fn.screenpos(p.winid, before[3], 1).col
     local gutter = vim.fn.getwininfo(p.winid)[1].textoff
@@ -190,6 +473,8 @@ describe('scrollback refresh', function()
     local oldbuf, oldwin, oldpos = p.bufid, p.winid, p.pos
     local before_lines, before_view = lines(), view()
     local columns, count = vim.o.columns, #vim.api.nvim_list_bufs()
+    local messages = original_ui_send and record_presentation()
+    local termsync = original_ui_send and vim.o.termsync
     vim.api.nvim_create_autocmd('FileType', {
       pattern = 'kitty-scrollback',
       once = true,
@@ -218,6 +503,10 @@ describe('scrollback refresh', function()
     assert.equals(p.paste_winid, vim.api.nvim_get_current_win())
     assert.same({ 'keep this draft' }, vim.api.nvim_buf_get_lines(p.paste_bufid, 0, -1, false))
     assert.equals(vim.log.levels.ERROR, notifications[1].level)
+    if messages then
+      assert.equals(2, #messages)
+      assert.equals(termsync, vim.o.termsync)
+    end
     api.refresh()
     assert.is_true(vim.wait(5000, function()
       return p.bufid ~= oldbuf and not p.refreshing
@@ -459,6 +748,7 @@ describe('scrollback refresh', function()
   end)
 
   it('keeps the old snapshot on a failed fetch and allows retrying', function()
+    local messages = original_ui_send and record_presentation()
     local oldbuf = p.bufid
     local before_lines = lines()
     local before_view = view()
@@ -473,6 +763,9 @@ describe('scrollback refresh', function()
     assert.same(before_lines, lines())
     assert.same(before_view, view())
     assert.equals(vim.log.levels.ERROR, notifications[1].level)
+    if messages then
+      assert.equals(0, #messages)
+    end
     p.kitty_data.window_id = 1
     api.refresh()
     assert.is_true(vim.wait(5000, function()

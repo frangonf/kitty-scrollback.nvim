@@ -871,6 +871,10 @@ If the viewed text has changed or left Kitty's retained history, refresh restore
 nearest available position and shows a warning. Failed refreshes keep the old snapshot.
 The default refresh mapping is buffer-local; `r` retains its normal Neovim meaning.
 
+On Neovim 0.12+, refresh uses Kitty synchronized output to hide temporary rendering
+resizes. Older Neovim versions retain the existing redraw behavior. Kitty releases a
+synchronized update after two seconds, so very large snapshots may still flicker.
+
 To use another key, map it to `<Plug>(KsbRefresh)` in the `after_setup` callback.
 For example, this uses `<Leader>R` instead of the default `<Leader>r`:
 

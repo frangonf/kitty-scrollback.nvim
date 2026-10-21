@@ -94,15 +94,34 @@ M.refresh = function(p, opts)
       vim.bo[buf].scrollback = vim.bo[oldbuf].scrollback
       local render_win
       local channel
+      local saved_termsync, leave_autocmd
+      local function end_presentation(leaving)
+        if saved_termsync == nil then
+          return
+        end
+        local termsync = saved_termsync
+        saved_termsync = nil
+        pcall(vim.api.nvim_del_autocmd, leave_autocmd)
+        leave_autocmd = nil
+        -- Release the host even if redraw is no longer possible during cleanup.
+        if not leaving then
+          pcall(vim.cmd.redraw)
+        end
+        pcall(vim.api.nvim_ui_send, '\27[?2026l')
+        vim.o.termsync = termsync
+      end
       local function discard()
         vim.o.columns = columns
         for win, saved in pairs(views) do
           if vim.api.nvim_win_is_valid(win) and vim.api.nvim_buf_is_valid(oldbuf) then
             if vim.api.nvim_win_get_buf(win) == buf then
-              vim.api.nvim_win_set_buf(win, oldbuf)
+              -- Rollback must not replay failing buffer hooks or close the paste draft.
+              pcall(vim.api.nvim_win_call, win, function()
+                vim.cmd('noautocmd keepalt buffer! ' .. oldbuf)
+              end)
             end
             if vim.api.nvim_win_get_buf(win) == oldbuf then
-              restore_window(win, saved)
+              pcall(restore_window, win, saved)
             end
           end
         end
@@ -110,11 +129,12 @@ M.refresh = function(p, opts)
           p.bufid, p.winid, p.pos = oldbuf, oldwin, oldpos
         end
         if render_win and vim.api.nvim_win_is_valid(render_win) then
-          vim.api.nvim_win_close(render_win, true)
+          pcall(vim.api.nvim_win_close, render_win, true)
         end
         if vim.api.nvim_buf_is_valid(buf) then
-          vim.api.nvim_buf_delete(buf, { force = true })
+          pcall(vim.api.nvim_buf_delete, buf, { force = true })
         end
+        end_presentation()
         p.refreshing = false
       end
       local function finish()
@@ -177,6 +197,7 @@ M.refresh = function(p, opts)
             view = vim.fn.winsaveview(),
           }
         end)
+        end_presentation()
         local initialized, init_error = pcall(vim.api.nvim_buf_call, buf, function()
           -- Ex propagates FileType hook errors so the old snapshot can be restored.
           vim.cmd('setlocal filetype=kitty-scrollback')
@@ -198,6 +219,22 @@ M.refresh = function(p, opts)
         end
       end
       local rendered, render_error = pcall(function()
+        if
+          columns < opts.scrollback_columns
+          and vim.api.nvim_ui_send
+          and vim.fn.exists('+termsync') == 1
+        then
+          saved_termsync = vim.o.termsync
+          leave_autocmd = vim.api.nvim_create_autocmd('VimLeavePre', {
+            desc = 'Restore Kitty refresh presentation',
+            callback = function()
+              end_presentation(true)
+            end,
+          })
+          vim.o.termsync = false
+          -- shortcut: Kitty thaws after 2s; revisit rendering if snapshots reach that limit.
+          vim.api.nvim_ui_send('\27[?2026h')
+        end
         -- Floats are clamped to the editor width, so use the initial loader's temporary width.
         vim.o.columns = math.max(columns, opts.scrollback_columns)
         render_win = vim.api.nvim_open_win(buf, false, {
@@ -218,7 +255,13 @@ M.refresh = function(p, opts)
         -- Terminal updates are deferred; restore the view only after rendered lines arrive.
         vim.api.nvim_buf_attach(buf, false, {
           on_lines = function()
-            vim.schedule(finish)
+            vim.schedule(function()
+              local ok, finish_error = pcall(finish)
+              if not ok then
+                discard()
+                failed(tostring(finish_error))
+              end
+            end)
             return true
           end,
         })
