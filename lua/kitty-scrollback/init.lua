@@ -9,6 +9,10 @@ M.setup = function(configs)
   if configs then
     M.configs = configs
   end
+  vim.api.nvim_create_user_command('KittyScrollbackRefresh', function()
+    require('kitty-scrollback.api').refresh()
+  end, { desc = 'Refresh scrollback while preserving the current view' })
+
   ---@brief [[
   ---:KittyScrollbackGenerateKittens Generate Kitten commands used as reference for configuring `kitty.conf`
   ---

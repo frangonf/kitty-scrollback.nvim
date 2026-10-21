@@ -840,6 +840,7 @@ The API is available via the `kitty-scrollback.api` module. e.g., `require('kitt
 | Command                                             | API                                                           | Description                                                                                       |
 | :-------------------------------------------------- | :------------------------------------------------------------ | :------------------------------------------------------------------------------------------------ |
 | `:KittyScrollbackGenerateKittens [generate_modes]`  | `generate_kittens(table<string\|'commands'\|'maps'>)?`        | Generate Kitten commands used as reference for configuring `kitty.conf`                           |
+| `:KittyScrollbackRefresh`                           | `refresh()`                                                   | Reload the source terminal's output while preserving the cursor and viewport                     |
 | `:KittyScrollbackCheckHealth`                       | `checkhealth()`                                               | Run `:checkhealth kitty-scrollback` in the context of Kitty                                       |
 | `:KittyScrollbackGenerateCommandLineEditing`        | `generate_command_line_editing(string\|'bash'\|'fish'\|'zsh)` | Generate command-line editing commands used as reference for configuring `bash`, `fish`, or `zsh` |
 
@@ -848,6 +849,7 @@ The API is available via the `kitty-scrollback.api` module. e.g., `require('kitt
 
 | `<Plug>` Mapping              | Default Mapping | Mode  | API                        | Description                                                                             |
 | ----------------------------- | --------------- | ----- | -------------------------- | --------------------------------------------------------------------------------------- |
+| `<Plug>(KsbRefresh)`          | `<Leader>r`     | n     | `refresh()`                | Refresh the scrollback buffer without following new output                              |
 | `<Plug>(KsbExecuteCmd)`       | `<C-CR>`        | n,i   | `execute_command()`        | Execute the contents of the paste window in Kitty                                       |
 | `<Plug>(KsbPasteCmd)`         | `<S-CR>`        | n,i   | `paste_command()`          | Paste the contents of the paste window to Kitty without executing                       |
 | `<Plug>(KsbExecuteVisualCmd)` | `<C-CR>`        | v     | `execute_visual_command()` | Execute the contents of visual selection in Kitty                                       |
@@ -861,6 +863,39 @@ The API is available via the `kitty-scrollback.api` module. e.g., `require('kitt
 | `<Plug>(KsbNormalYank)`       | `<Leader>y`     | n     |                            | Maps to `"+y`                                                                           |
 | `<Plug>(KsbNormalYankLine)`   | `<Leader>yy`    | n     |                            | Maps to `"+yy`                                                                          |
 
+
+In this fork, press `<Leader>r` in the scrollback buffer or run `:KittyScrollbackRefresh`
+to fetch the latest output. Refresh preserves the cursor, vertical and horizontal scroll,
+and paste-window drafts. It rebuilds the snapshot rather than duplicating old output.
+If the viewed text has changed or left Kitty's retained history, refresh restores the
+nearest available position and shows a warning. Failed refreshes keep the old snapshot.
+The default refresh mapping is buffer-local; `r` retains its normal Neovim meaning.
+
+On Neovim 0.12+, refresh uses Kitty synchronized output to hide temporary rendering
+resizes. Older Neovim versions retain the existing redraw behavior. Kitty releases a
+synchronized update after two seconds, so very large snapshots may still flicker.
+
+To use another key, map it to `<Plug>(KsbRefresh)` in the `after_setup` callback.
+For example, this uses `<Leader>R` instead of the default `<Leader>r`:
+
+```lua
+require('kitty-scrollback').setup({
+  {
+    callbacks = {
+      after_setup = function()
+        vim.keymap.set('n', '<leader>R', '<Plug>(KsbRefresh)', {
+          desc = 'Refresh Kitty scrollback',
+        })
+      end,
+    },
+  },
+})
+```
+
+Following upstream's mapping convention, an existing mapping to `<Plug>(KsbRefresh)`
+suppresses the default. An unrelated mapping on `<Leader>r` can still be overridden
+if refresh has no alternative binding. Set `keymaps_enabled = false` to disable
+plugin mappings and wire your own keys to `refresh()` or `:KittyScrollbackRefresh`.
 
 ## 🪛 Optional Setup
 

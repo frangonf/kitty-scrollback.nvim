@@ -111,6 +111,7 @@ M.plug_mapping_names = {
 
   CLOSE_OR_QUIT_ALL = '<Plug>(KsbCloseOrQuitAll)',
   QUIT_ALL = '<Plug>(KsbQuitAll)',
+  REFRESH = '<Plug>(KsbRefresh)',
 
   EXECUTE_VISUAL_CMD = '<Plug>(KsbExecuteVisualCmd)',
   PASTE_VISUAL_CMD = '<Plug>(KsbPasteVisualCmd)',

@@ -99,11 +99,15 @@ M.open_paste_window = function(start_insert)
   local lnum = p.pos.cursor_line - p.pos.win_first_line - 1
   local col = p.pos.col + 1
 
-  -- TermEnter may position cursor at the end of file with extra blank lines
-  -- Adjust cursor to hide blank lines and move cursor to initial position set by set_cursor_position
-  vim.fn.cursor(p.pos.win_first_line, 1)
-  vim.cmd.redraw()
-  vim.fn.cursor(p.pos.cursor_line, col)
+  if p.pos.view then
+    vim.fn.winrestview(p.pos.view)
+  else
+    -- TermEnter may position cursor at the end of file with extra blank lines
+    -- Adjust cursor to hide blank lines and move cursor to initial position set by set_cursor_position
+    vim.fn.cursor(p.pos.win_first_line, 1)
+    vim.cmd.redraw()
+    vim.fn.cursor(p.pos.cursor_line, col)
+  end
 
   if not p.paste_bufid then
     p.paste_bufid = vim.api.nvim_create_buf(false, false)

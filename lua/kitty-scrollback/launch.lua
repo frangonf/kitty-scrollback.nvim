@@ -49,6 +49,7 @@ local M = {}
 ---@field shell string kitty shell program to execute
 
 ---@class KsbPrivate
+---@field refreshing boolean|nil a refresh is already fetching scrollback
 ---@field orig_columns number
 ---@field orig_normal_hl table|nil
 ---@field bufid integer|nil the buffer ID of the scrollback buffer
@@ -403,6 +404,7 @@ M.launch = function()
         vim.api.nvim_set_option_value('filetype', 'kitty-scrollback', {
           buf = p.bufid,
         })
+        ksb_keymaps.set_scrollback_keymaps(p.bufid)
         if opts.scrollback_tempfile then
           local tempfile, ok = ksb_util.create_tempfile(p.bufid, term_buf_name)
           if ok then

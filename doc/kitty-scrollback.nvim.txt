@@ -865,6 +865,9 @@ The API is available via the `kitty-scrollback.api` module. e.g.,
                                                                                                                    reference for configuring
                                                                                                                    kitty.conf
 
+  :KittyScrollbackRefresh                            refresh()                                                     Reload source output, preserving
+                                                                                                                   the cursor and viewport
+
   :KittyScrollbackCheckHealth                        checkhealth()                                                 Run
                                                                                                                    :checkhealth kitty-scrollback in
                                                                                                                    the context of Kitty
@@ -883,6 +886,8 @@ The API is available via the `kitty-scrollback.api` module. e.g.,
 <Plug> Mapping                Default      Mode    API                        Description
                                 Mapping
   ----------------------------- ------------ ------- -------------------------- --------------------------------------
+<Plug>(KsbRefresh)            <Leader>r    n       refresh()                  Refresh without following new output
+
 <Plug>(KsbExecuteCmd)         <C-CR>       n,i     execute_command()          Execute the contents of the paste
                                                                                 window in Kitty
 
@@ -914,6 +919,38 @@ The API is available via the `kitty-scrollback.api` module. e.g.,
 
 <Plug>(KsbNormalYankLine)     <Leader>yy   n                                  Maps to "+yy
   --------------------------------------------------------------------------------------------------------------------
+
+In this fork, <Leader>r in the scrollback buffer or :KittyScrollbackRefresh
+fetches current output while preserving the cursor, vertical and horizontal
+scroll, and paste-window drafts. The mapping is buffer-local. Refresh rebuilds
+the snapshot; it does not duplicate previous output. Changed or discarded text
+falls back to the nearest available position with a warning. Failed refreshes
+keep the previous snapshot.
+
+On Neovim 0.12+, refresh uses Kitty synchronized output to hide temporary
+rendering resizes. Older Neovim versions retain the existing redraw behavior.
+Kitty releases a synchronized update after two seconds, so very large
+snapshots may still flicker.
+
+To use <Leader>R instead of the default <Leader>r, configure:
+>lua
+    require('kitty-scrollback').setup({
+      {
+        callbacks = {
+          after_setup = function()
+            vim.keymap.set('n', '<leader>R', '<Plug>(KsbRefresh)', {
+              desc = 'Refresh Kitty scrollback',
+            })
+          end,
+        },
+      },
+    })
+<
+An existing mapping to <Plug>(KsbRefresh) suppresses the default, following
+upstream's mapping convention. An unrelated mapping on <Leader>r can still be
+overridden if refresh has no alternative binding. Set keymaps_enabled = false
+to disable plugin mappings; refresh() and :KittyScrollbackRefresh remain
+available for your own bindings.
 
 OPTIONAL SETUP                          *kitty-scrollback.nvim-optional-setup*
 
